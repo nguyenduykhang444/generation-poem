@@ -1,0 +1,23 @@
+# 1. Môi trường ảo Python (Virtual Environment)
+.venv/
+venv/
+env/
+
+# 2. Bộ nhớ đệm của Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 3. Trọng số mô hình và Checkpoints (RẤT NẶNG, tuyệt đối không push)
+checkpoints/
+mlx_adapter/
+
+# 4. Dữ liệu xử lý và File Text lớn (Tùy chọn, nên ignore nếu file quá nặng)
+mlx_data/
+train.txt
+test.txt
+text_phonetic_dict.json
+qwen-lucbat-model/
+
+# 5. File hệ thống của macOS (Máy Mac tự sinh ra)
+.DS_Store
