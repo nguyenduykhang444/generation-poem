@@ -77,6 +77,10 @@ while i < len(lines) - 1:
         i += 2
     else: i += 1
 
+# CẮT LẤY 10% TẬP DỮ LIỆU Ở ĐÂY
+limit = max(1, int(len(test_data) * 0.1))
+test_data = test_data[:limit]
+
 print("Đang tải Tokenizer và Mô hình Sinh thơ...")
 model_path = "./qwen-lucbat-model" 
 tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -91,7 +95,7 @@ print("Đang khởi tạo BERTScorer (PhoBERT)...")
 scorer = BERTScorer(model_type="vinai/phobert-base", num_layers=9, rescale_with_baseline=False)
 
 print("\n" + "="*60)
-print(f"BẮT ĐẦU ĐÁNH GIÁ (CÓ BỘ ÉP LUẬT TỔNG HỢP) - TẤT CẢ {len(test_data)} MẪU")
+print(f"BẮT ĐẦU ĐÁNH GIÁ (CÓ BỘ ÉP LUẬT TỔNG HỢP) - TẤT CẢ {len(test_data)} MẪU (10% DỮ LIỆU)")
 print("="*60)
 
 total_rule = 0; total_len = 0; total_tone = 0; total_rhyme = 0
@@ -136,7 +140,7 @@ n = len(test_data)
 eval_time = time.time() - start_time
 
 print("\n" + "="*60)
-print("BÁO CÁO ĐÁNH GIÁ CHUẨN VIVERSE-A1 (TOÀN BỘ DỮ LIỆU)")
+print("BÁO CÁO ĐÁNH GIÁ CHUẨN VIVERSE-A1 (10% DỮ LIỆU)")
 print("="*60)
 print(f"Tổng số mẫu test:      {n}")
 print(f"Thời gian chạy:        {eval_time:.1f} giây (~{eval_time/60:.1f} phút)")

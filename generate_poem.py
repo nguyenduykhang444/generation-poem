@@ -22,7 +22,7 @@ print(f"\n=> AI đã được lệnh sáng tác ngẫu nhiên một bài thơ d�
 processor = StrictLucBatProcessor(tokenizer, max_total_lines=target_lines)
 logits_processor_list = LogitsProcessorList([processor])
 
-prompt = "Đồng Tháp"
+prompt = "Mùa mưa"
 inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
 print("Đang sáng tác thơ...")

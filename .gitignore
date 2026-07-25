@@ -18,6 +18,7 @@ train.txt
 test.txt
 text_phonetic_dict.json
 qwen-lucbat-model/
+mlx_quantized_0.8B/
 
 # 5. File hệ thống của macOS (Máy Mac tự sinh ra)
 .DS_Store
