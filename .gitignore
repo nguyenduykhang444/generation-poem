@@ -17,6 +17,8 @@ mlx_data/
 train.txt
 test.txt
 text_phonetic_dict.json
+llama-lucbat-model/
+gemma-lucbat-model/
 qwen-lucbat-model/
 mlx_quantized_0.8B/
 
