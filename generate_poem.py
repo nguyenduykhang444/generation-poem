@@ -1,6 +1,9 @@
-# -*- coding: utf-8 -*-
+
 import gc
+import json
 import os
+import shutil
+import tempfile
 import time
 import unicodedata
 
@@ -163,6 +166,106 @@ def score_poem(poem, target_lines):
 # ==========================================================================
 # Nạp mô hình
 # ==========================================================================
+def _downgrade_tokenizer_json(data):
+    changed = False
+    model = data.get("model") or {}
+    merges = model.get("merges")
+    if isinstance(merges, list) and merges and isinstance(merges[0], (list, tuple)):
+        model["merges"] = [" ".join(pair) for pair in merges]
+        changed = True
+    if "ignore_merges" in model:
+        model.pop("ignore_merges")
+        changed = True
+    return changed
+
+
+def _copy_tokenizer_files(path, target):
+    for name in os.listdir(path):
+        full = os.path.join(path, name)
+        if os.path.isfile(full) and not name.endswith(".safetensors"):
+            shutil.copy(full, os.path.join(target, name))
+
+
+def _repaired_tokenizer_dir(path):
+    src = os.path.join(path, "tokenizer.json")
+    if not os.path.exists(src):
+        return None
+    with open(src, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not _downgrade_tokenizer_json(data):
+        return None
+    tmp = tempfile.mkdtemp(prefix="lucbat_fix_")
+    _copy_tokenizer_files(path, tmp)
+    with open(os.path.join(tmp, "tokenizer.json"), "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False)
+    return tmp
+
+
+def _patched_config_dir(path):
+    src = os.path.join(path, "tokenizer_config.json")
+    if not os.path.exists(src):
+        return None
+    with open(src, encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    if "tokenizer_class" not in cfg:
+        return None
+    cfg.pop("tokenizer_class", None)
+    tmp = tempfile.mkdtemp(prefix="lucbat_tok_")
+    _copy_tokenizer_files(path, tmp)
+    with open(os.path.join(tmp, "tokenizer_config.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump(cfg, fh, ensure_ascii=False)
+    return tmp
+
+
+def load_tokenizer(path):
+    """Nạp bộ tách từ từ chính thư mục mô hình, không tải gì từ mạng."""
+    attempts = [
+        ("thư mục mô hình",
+         lambda: AutoTokenizer.from_pretrained(path, trust_remote_code=True)),
+        ("thư mục mô hình, bộ tách từ chậm",
+         lambda: AutoTokenizer.from_pretrained(path, use_fast=False,
+                                               trust_remote_code=True)),
+    ]
+
+    repaired = patched = None
+    try:
+        repaired = _repaired_tokenizer_dir(path)
+    except Exception:
+        repaired = None
+    if repaired:
+        attempts.append(("sau khi hạ định dạng trường merges",
+                         lambda: AutoTokenizer.from_pretrained(
+                             repaired, trust_remote_code=True)))
+    try:
+        patched = _patched_config_dir(path)
+    except Exception:
+        patched = None
+    if patched:
+        attempts.append(("sau khi gỡ trường tokenizer_class",
+                         lambda: AutoTokenizer.from_pretrained(
+                             patched, trust_remote_code=True)))
+    if repaired:
+        try:
+            both = _patched_config_dir(repaired)
+        except Exception:
+            both = None
+        if both:
+            attempts.append(("sau khi sửa cả hai lỗi định dạng",
+                             lambda: AutoTokenizer.from_pretrained(
+                                 both, trust_remote_code=True)))
+
+    errors = []
+    for label, fn in attempts:
+        try:
+            return fn(), label
+        except Exception as exc:
+            errors.append("%s: %s" % (label, str(exc).split("\n")[0][:150]))
+    raise RuntimeError(
+        "Không nạp được bộ tách từ từ %s\nTệp hiện có: %s\n%s"
+        % (path, ", ".join(sorted(os.listdir(path))), "\n".join(errors)))
+
+
 def pick_dtype():
     if torch.cuda.is_available():
         return torch.float16
@@ -171,29 +274,28 @@ def pick_dtype():
     return torch.float32
 
 
-def load_model_from_path(path):
-    """Nạp mô hình và bộ tách từ từ thư mục đã tinh chỉnh."""
-    if not os.path.isdir(path):
-        raise FileNotFoundError("Không tìm thấy thư mục mô hình %s" % path)
-
-    tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    model = AutoModelForCausalLM.from_pretrained(
-        path,
-        device_map="auto",
-        torch_dtype=pick_dtype(),
-        attn_implementation="sdpa",
-        trust_remote_code=True,
-    )
-    model.eval()
-    return model, tokenizer
+def load_model_weights(path):
+    common = dict(torch_dtype=pick_dtype(), trust_remote_code=True,
+                  low_cpu_mem_usage=True)
+    try:
+        return AutoModelForCausalLM.from_pretrained(
+            path, device_map="auto", attn_implementation="sdpa", **common)
+    except Exception:
+        return AutoModelForCausalLM.from_pretrained(path, device_map="auto",
+                                                    **common)
 
 
 @st.cache_resource(show_spinner=False)
 def load_model(name):
-    return load_model_from_path(MODELS_CONFIG[name])
+    path = MODELS_CONFIG[name]
+    if not os.path.isdir(path):
+        raise FileNotFoundError("Không tìm thấy thư mục mô hình %s" % path)
+    tokenizer, source = load_tokenizer(path)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    model = load_model_weights(path)
+    model.eval()
+    return model, tokenizer, source
 
 
 @st.cache_resource(show_spinner=False)
@@ -495,7 +597,8 @@ def main():
 
     try:
         with st.spinner("Đang nạp mô hình %s" % model_name):
-            model, tokenizer = load_model(model_name)
+            model, tokenizer, source = load_model(model_name)
+        st.caption("Bộ tách từ nạp từ: %s" % source)
     except Exception as exc:
         st.error("Không nạp được mô hình %s" % model_name)
         st.code(str(exc))
