@@ -1,0 +1,7 @@
+streamlit>=1.30
+torch>=2.1
+transformers>=4.44
+tokenizers>=0.20
+sentencepiece
+protobuf
+accelerate

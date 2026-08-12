@@ -1,0 +1,13 @@
+[server]
+fileWatcherType = "none"
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[logger]
+level = "warning"
+
+[theme]
+base = "light"
+primaryColor = "#C0392B"
