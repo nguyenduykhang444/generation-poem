@@ -3,8 +3,6 @@ import unicodedata
 import torch
 from transformers import LogitsProcessor
 
-__version__ = "2.0"
-
 HUYEN, SAC, NGA, HOI, NANG = "\u0300", "\u0301", "\u0303", "\u0309", "\u0323"
 TONE_MARKS = {HUYEN, SAC, NGA, HOI, NANG}
 TRAC_MARKS = {SAC, NGA, HOI, NANG}
