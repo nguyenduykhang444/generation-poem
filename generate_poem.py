@@ -11,7 +11,7 @@ import streamlit as st
 import torch
 from transformers import (AutoModelForCausalLM, AutoTokenizer, LogitsProcessor,
                           LogitsProcessorList, StoppingCriteria,
-                          StoppingCriteriaList, set_seed)
+                          StoppingCriteriaList)
 
 from lucbat_processor import StrictLucBatProcessor, load_syllables
 
@@ -219,6 +219,7 @@ def _patched_config_dir(path):
 
 
 def load_tokenizer(path):
+    """Nạp bộ tách từ từ chính thư mục mô hình, không tải gì từ mạng."""
     attempts = [
         ("thư mục mô hình",
          lambda: AutoTokenizer.from_pretrained(path, trust_remote_code=True)),
@@ -409,15 +410,17 @@ def count_lines(text):
     return len([ln for ln in text.split("\n") if ln.strip()])
 
 
-def generate(model, tokenizer, prompt, target_lines, apply_rules, seed,
+def generate(model, tokenizer, prompt, target_lines, apply_rules,
              syllables, gen_kwargs, max_new_tokens, max_rounds=5):
     """Sinh thơ cho tới khi đủ số dòng yêu cầu.
 
     Mô hình có thể dừng sớm dù token kết thúc đã bị chặn, chẳng hạn khi chạm
     giới hạn số token. Khi đó hàm này nối thêm ký tự xuống dòng rồi sinh tiếp,
     nhờ vậy hai chế độ luôn cho ra cùng một số dòng.
+
+    Quá trình sinh không cố định hạt giống ngẫu nhiên, do đó mỗi lần bấm sinh
+    thơ sẽ cho ra một phương án khác nhau.
     """
-    set_seed(seed)
     text = prompt
     per_line = max(12, max_new_tokens // max(1, target_lines))
     for _ in range(max_rounds):
@@ -468,7 +471,7 @@ def render_evaluation(poem, target_lines):
         st.success("Bài thơ có đúng %d dòng theo yêu cầu." % target_lines)
     else:
         st.warning("Bài thơ có %d dòng, khác với %d dòng được yêu cầu. Thử "
-                   "tăng temperature hoặc đổi seed để mô hình viết dài hơn."
+                   "bấm sinh lại hoặc tăng temperature để mô hình viết dài hơn."
                    % (result["n_lines"], target_lines))
 
     st.markdown("**Chi tiết từng dòng**")
@@ -539,13 +542,13 @@ def main():
         st.divider()
         st.subheader("Tham số sinh")
         temperature = st.slider(
-            "temperature", 0.1, 1.5, 0.85, 0.05,
+            "temperature", 0.1, 1.5, 0.80, 0.05,
             help="Độ ngẫu nhiên khi chọn từ. Giá trị thấp cho câu thơ an "
                  "toàn, dùng từ quen thuộc và ít sai luật nhưng dễ nhàm. Giá "
                  "trị cao cho câu thơ giàu bất ngờ nhưng dễ lạc ý và tăng "
                  "nguy cơ mô hình bị bộ ràng buộc chặn.")
         top_k = st.slider(
-            "top_k", 1, 100, 40, 1,
+            "top_k", 1, 100, 100, 1,
             help="Số từ có xác suất cao nhất được đưa vào vòng chọn. Giá trị "
                  "nhỏ khiến thơ đơn điệu và lặp ý. Giá trị lớn mở rộng vốn từ "
                  "nhưng có thể chọn phải từ ít phù hợp ngữ cảnh.")
@@ -555,15 +558,10 @@ def main():
                  "xác suất vượt ngưỡng này. Giá trị thấp thu hẹp lựa chọn "
                  "quanh những từ chắc chắn, giá trị gần 1 gần như không lọc.")
         rep_penalty = st.slider(
-            "repetition_penalty", 1.0, 1.5, 1.1, 0.05,
+            "repetition_penalty", 1.0, 1.5, 1.0, 0.05,
             help="Mức phạt những từ đã xuất hiện. Bằng 1 là không phạt nên "
                  "thơ dễ lặp từ. Giá trị lớn hạn chế lặp nhưng nếu quá cao sẽ "
                  "cản cả những từ cần nhắc lại như điệp ngữ.")
-        seed = st.number_input(
-            "seed", value=42, step=1,
-            help="Hạt giống ngẫu nhiên. Giữ nguyên giá trị và cùng lời nhắc "
-                 "sẽ cho ra đúng bài thơ cũ. Đổi giá trị để lấy một phương án "
-                 "khác với cùng cấu hình.")
         st.divider()
         if syllables:
             st.caption("Danh sách tiếng hợp lệ: %d tiếng" % len(syllables))
@@ -574,7 +572,7 @@ def main():
     st.subheader("Lời nhắc đầu vào")
     prompt = st.text_area(
         "Nhập một từ khóa, một câu lục hoặc một đoạn thơ mồi",
-        value="Chiều buông",
+        value="Thanh xuân như một tách trà",
         height=120,
         help="Có thể nhập vài tiếng làm gợi ý, một câu lục đủ 6 tiếng, hoặc "
              "nhiều dòng thơ. Mô hình sẽ viết tiếp cho đủ số câu yêu cầu.")
@@ -624,7 +622,7 @@ def main():
             start = time.time()
             try:
                 poem = generate(model, tokenizer, prompt, target_lines,
-                                apply_rules, int(seed), syllables, gen_kwargs,
+                                apply_rules, syllables, gen_kwargs,
                                 max_tokens)
             except Exception as exc:
                 st.error("Lỗi khi sinh thơ ở chế độ %s" % label.lower())
