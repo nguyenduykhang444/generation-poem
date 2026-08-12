@@ -9,8 +9,8 @@ from transformers import (AutoModelForCausalLM, AutoTokenizer,
 
 from lucbat_processor import StrictLucBatProcessor, load_syllables
 
-MODEL_NAME = "Qwen 3.5 0.8B"
-MODEL_PATH = "./qwen-lucbat-model"
+MODEL_NAME = "Gemma 2 2B"
+MODEL_PATH = "./gemma-lucbat-model"
 DATASET_FILE = "test.txt"
 SYLLABLE_FILE = "train.txt"
 
