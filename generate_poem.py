@@ -275,14 +275,20 @@ def pick_dtype():
 
 
 def load_model_weights(path):
-    common = dict(torch_dtype=pick_dtype(), trust_remote_code=True,
+    common = dict(dtype=pick_dtype(), trust_remote_code=True,
                   low_cpu_mem_usage=True)
     try:
-        return AutoModelForCausalLM.from_pretrained(
-            path, device_map="auto", attn_implementation="sdpa", **common)
+        model = AutoModelForCausalLM.from_pretrained(
+            path, attn_implementation="sdpa", **common)
     except Exception:
-        return AutoModelForCausalLM.from_pretrained(path, device_map="auto",
-                                                    **common)
+        model = AutoModelForCausalLM.from_pretrained(path, **common)
+
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        model = model.to("mps")
+    elif torch.cuda.is_available():
+        model = model.to("cuda")
+        
+    return model
 
 
 @st.cache_resource(show_spinner=False)
@@ -403,7 +409,7 @@ def _run_once(model, tokenizer, text, target_lines, apply_rules, syllables,
             eos_token_id=tokenizer.eos_token_id,
             **gen_kwargs,
         )
-    return tokenizer.decode(outputs[0], skip_special_tokens=True)
+    return tokenizer.decode(outputs[0], skip_special_tokens=True, clean_up_tokenization_spaces=False)
 
 
 def count_lines(text):

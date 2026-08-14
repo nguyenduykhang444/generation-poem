@@ -1,7 +1,8 @@
-streamlit>=1.30
-torch>=2.1
-transformers>=4.44
-tokenizers>=0.20
+streamlit>=1.30.0
+torch>=2.1.0
+transformers>=4.44.0
+tokenizers>=0.20.0
 sentencepiece
 protobuf
 accelerate
+charset-normalizer
