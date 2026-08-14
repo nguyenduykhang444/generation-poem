@@ -17,10 +17,10 @@ mlx_data/
 train.txt
 test.txt
 text_phonetic_dict.json
-llama-lucbat-model/
-gemma-lucbat-model/
-qwen-lucbat-model/
 mlx_quantized_0.8B/
+qwen-lucbat-model/model.safetensors
+llama-lucbat-model/model.safetensors
+gemma-lucbat-model/model.safetensors
 
 # 5. File hệ thống của macOS (Máy Mac tự sinh ra)
 .DS_Store
