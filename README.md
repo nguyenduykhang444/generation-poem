@@ -4,7 +4,11 @@
 ## 1. Chạy môi trương
 
 ```
-source /Users/khang/Documents/Dev/XLNNTN/generation-poem/.venv/bin/activate
+python3 -m venv .venv
+```
+
+```
+source .venv/bin/activate
 ```
 
 ## 2. Cài đặt thư viện
