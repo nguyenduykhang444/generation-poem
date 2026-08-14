@@ -1,4 +1,6 @@
 import unicodedata
+from functools import lru_cache
+
 import torch
 from transformers import LogitsProcessor
 
@@ -27,7 +29,7 @@ from transformers import LogitsProcessor
 # Nhóm Điều hướng và Chống bế tắc
 # Đ01: Dòng đủ tiếng, tiếng cuối hoàn chỉnh, thơ chưa đủ dòng -> Cộng 25 điểm cho token xuống dòng. (Hỗ trợ cộng điểm thưởng khi token khép lại một tiếng trọn vẹn).
 # Đ02: Dòng đủ tiếng, tiếng cuối hoàn chỉnh, thơ đã đủ dòng -> Cộng 50 điểm cho token kết thúc. (Hỗ trợ cộng điểm thưởng khi token khép lại một tiếng trọn vẹn).
-# Đ03: Quét toàn bộ từ vựng viết nốt tiếng dở dang, nới lỏng theo tầng ưu tiên, khôi phục điểm cho token xuống dòng,kết thúc khi toàn bộ véc-tơ mang điểm âm vô cùng.
+# Đ03: Quét toàn bộ từ vựng viết nốt tiếng dở dang, nới lỏng theo tầng ưu tiên, khôi phục điểm cho token xuống dòng, kết thúc khi toàn bộ véc-tơ mang điểm âm vô cùng.
 
 HUYEN, SAC, NGA, HOI, NANG = "\u0300", "\u0301", "\u0303", "\u0309", "\u0323"
 TONE_MARKS = {HUYEN, SAC, NGA, HOI, NANG}
@@ -36,6 +38,7 @@ TRAC_MARKS = {SAC, NGA, HOI, NANG}
 # dấu phụ: dấu á, dấu ớ, dấu ơ
 BREVE, CIRCUMFLEX, HORN = "\u0306", "\u0302", "\u031b"
 MOD_MARKS = {BREVE, CIRCUMFLEX, HORN}
+
 VOWELS = set("aeiouyăâêôơư")
 
 # bảng chữ cái tiếng Việt
@@ -64,47 +67,65 @@ TARGET_TONE = {2: "B", 4: "T", 6: "B", 8: "B"}
 
 # ký hiệu dấu cách
 WORD_START_MARKS = ("\u0120", "\u2581", " ")
+
 MAX_SYLLABLE_LEN = 7
 _LATIN_CACHE = {}
 _VIET_CHAR_CACHE = {}
 
-TIER_FULL = 0    # thỏa mọi luật
+TIER_FULL = 0
 TIER_SOFT = 1    # vi phạm luật phụ (Hạ tầng ưu tiên): L13, L14, L15.
 TIER_LEX = 2     # đúng cấu trúc tiếng Việt nhưng không có trong danh sách L16 (Hạ tầng ưu tiên).
 TIER_RHYME = 3   # sai vần L10, L12.
 TIER_TONE = 4    # sai thanh điệu L06 đến L09.
 TIER_ORDER = (TIER_FULL, TIER_SOFT, TIER_LEX, TIER_RHYME, TIER_TONE)
 
-def _decompose(word): 
+# giá trị canh chừng cho bộ nhớ đệm, phân biệt chưa tính với kết quả None
+_MISS = object()
+
+@lru_cache(maxsize=100000)
+def _decompose(word):
     return unicodedata.normalize("NFD", word.lower())
 
-def normalize(word): 
+
+@lru_cache(maxsize=100000)
+def normalize(word):
     return unicodedata.normalize("NFC", word.strip().lower())
 
-def has_vowel(word): 
+
+@lru_cache(maxsize=100000)
+def has_vowel(word):
     # Hỗ trợ L02: Tiếng cuối cùng phải chứa ít nhất một nguyên âm.
     return any(c in VOWELS for c in _decompose(word) if c not in TONE_MARKS)
 
-def get_tone(word): 
+
+@lru_cache(maxsize=100000)
+def get_tone(word):
     d = _decompose(word)
     if not any(c in VOWELS for c in d if c not in TONE_MARKS):
         return None
     return "T" if any(c in TRAC_MARKS for c in d) else "B"
 
-def get_tone_mark(word): 
+
+@lru_cache(maxsize=100000)
+def get_tone_mark(word):
     return "huyen" if HUYEN in _decompose(word) else "ngang"
 
-def get_tone_char(word): 
+
+@lru_cache(maxsize=100000)
+def get_tone_char(word):
     for c in _decompose(word):
         if c in TONE_MARKS:
             return c
     return ""
 
-def remove_tones(word): 
+
+@lru_cache(maxsize=100000)
+def remove_tones(word):
     stripped = "".join(c for c in _decompose(word) if c not in TONE_MARKS)
     return unicodedata.normalize("NFC", stripped)
 
-def is_viet_char(ch): 
+
+def is_viet_char(ch):
     # Hỗ trợ L17: Đảm bảo tiếng chỉ gồm chữ cái Latin hợp lệ
     ok = _VIET_CHAR_CACHE.get(ch)
     if ok is None:
@@ -114,16 +135,21 @@ def is_viet_char(ch):
         _VIET_CHAR_CACHE[ch] = ok
     return ok
 
-def is_viet_surface(text): 
+
+def is_viet_surface(text):
     # Phục vụ L17: bề mặt của token chỉ gồm chữ cái tiếng Việt và dấu cách
     return bool(text) and all(c == " " or is_viet_char(c) for c in text)
 
-def is_valid_syllable(word): 
+
+@lru_cache(maxsize=100000)
+def is_valid_syllable(word):
     if not word or len(word) > MAX_SYLLABLE_LEN:
         return False
     return all(is_viet_char(c) for c in word)
 
-def split_syllable(word): 
+
+@lru_cache(maxsize=100000)
+def split_syllable(word):
     # Phục vụ L17: tách tiếng thành âm đầu, phần vần, âm cuối
     w = remove_tones(word.lower())
     onset = ""
@@ -137,14 +163,18 @@ def split_syllable(word):
         i += 1
     return onset, rest[:i], rest[i:]
 
-def has_viet_structure(word): 
+
+@lru_cache(maxsize=100000)
+def has_viet_structure(word):
     # Phục vụ L17: kiểm tra cấu trúc âm tiết tiếng Việt
     if not is_valid_syllable(word):
         return False
     _, nucleus, coda = split_syllable(word)
     return bool(nucleus) and nucleus in NUCLEI and coda in FINALS
 
-def is_structure_prefix(word): 
+
+@lru_cache(maxsize=100000)
+def is_structure_prefix(word):
     # Phục vụ L17: tiếng đang dở còn có thể hoàn tất thành tiếng hợp lệ
     if not is_valid_syllable(word):
         return False
@@ -156,26 +186,68 @@ def is_structure_prefix(word):
         return False
     return any(f.startswith(coda) for f in FINALS)
 
-def get_rhyme_part(word): 
+
+@lru_cache(maxsize=100000)
+def get_rhyme_part(word):
     w = remove_tones(word.strip())
     for c in CONSONANTS:
         if w.startswith(c):
             return w[len(c):]
     return w
 
-def build_prefix_set(syllables): 
-    # Tập tiền tố sinh ra từ danh sách tiếng hợp lệ, phục vụ L17
-    prefixes = set()
-    for s in syllables:
-        for form in (s, remove_tones(s)):
-            for i in range(1, len(form) + 1):
-                prefixes.add(form[:i])
-    return prefixes
 
-def build_variant_index(syllables): 
+_INDEX_CACHE = {}
+
+
+def get_indices(syllables, cont_surfaces, tag):
+    key = (id(syllables), len(syllables), tag)
+    hit = _INDEX_CACHE.get(key)
+    if hit is not None:
+        return hit[1:]
+    prefix_index, base_index = build_prefix_index(syllables)
+    variants = build_variant_index(syllables)
+    reach = build_reach_set(syllables, cont_surfaces)
+    _INDEX_CACHE.clear()
+    _INDEX_CACHE[key] = (syllables, prefix_index, base_index, variants, reach)
+    return prefix_index, base_index, variants, reach
+
+
+def build_prefix_index(syllables):
+    index = {}
+    base = {}
+    for s in syllables:
+        for i in range(1, len(s) + 1):
+            index.setdefault(s[:i], set()).add(s)
+        b = remove_tones(s)
+        for i in range(1, len(b) + 1):
+            key = b[:i]
+            if base.get(key, 0) < len(b):
+                base[key] = len(b)
+    return {k: tuple(v) for k, v in index.items()}, base
+
+
+def build_reach_set(syllables, cont_surfaces):
+    reach = set()
+    for s in syllables:
+        length = len(s)
+        ok = [False] * (length + 1)
+        ok[length] = True
+        for i in range(length - 1, -1, -1):
+            for j in range(i + 1, length + 1):
+                if ok[j] and s[i:j] in cont_surfaces:
+                    ok[i] = True
+                    break
+        for i in range(1, length + 1):
+            if ok[i]:
+                reach.add(s[:i])
+    return reach
+
+
+def build_variant_index(syllables):
     return {(remove_tones(s), get_tone_char(s)) for s in syllables}
 
-def _bytes_to_unicode(): 
+
+def _bytes_to_unicode():
     bs = list(range(33, 127)) + list(range(161, 173)) + list(range(174, 256))
     cs = bs[:]
     n = 0
@@ -186,7 +258,9 @@ def _bytes_to_unicode():
             n += 1
     return dict(zip(bs, [chr(c) for c in cs]))
 
+
 _BYTE_DECODER = {v: k for k, v in _bytes_to_unicode().items()}
+
 
 def _token_surface(tok):
     if tok.startswith("\u2581"):
@@ -199,14 +273,17 @@ def _token_surface(tok):
             return ""
     return tok
 
-def _vocab_tables(tokenizer): 
-    cached = getattr(tokenizer, "_lucbat_vocab_tables", None)
+
+def _vocab_tables(tokenizer):
+    cached = getattr(tokenizer, "_lucbat_tables_v2", None)
     if cached is not None:
         return cached
 
-    allowed = set()
+    allowed = []
     prefixes = set()
-    surface_map = {}
+    surfaces = {}
+    starts = set()
+    by_surface = {}
     try:
         size = len(tokenizer)
     except Exception:
@@ -227,31 +304,36 @@ def _vocab_tables(tokenizer):
                 except Exception:
                     chunk.append("")
         for tid, s in zip(ids, chunk):
+            # L17: bề mặt token chỉ được gồm chữ cái tiếng Việt và dấu cách
             if not s or not s.strip():
                 continue
-            # L17: bề mặt token chỉ được gồm chữ cái tiếng Việt và dấu cách
             if not is_viet_surface(s):
                 continue
+            # mỗi token chỉ được mang tối đa một tiếng, nhờ ràng buộc này mọi
+            # tiếng mới sinh ra đều đi qua đủ các bước kiểm tra
             pieces = s.split()
             if len(pieces) != 1 or len(pieces[0]) > MAX_SYLLABLE_LEN:
                 continue
-            allowed.add(tid)
-            surface_map[tid] = s
+            allowed.append(tid)
+            surfaces[tid] = s
             if s[0] in WORD_START_MARKS:
+                starts.add(tid)
                 continue
+            by_surface.setdefault(s, tid)
             t = remove_tones(s)
             for k in (1, 2, 3):
                 if len(t) >= k:
                     prefixes.add(t[:k])
 
-    tables = (allowed, prefixes, surface_map)
+    tables = (allowed, prefixes, surfaces, starts, by_surface)
     try:
-        setattr(tokenizer, "_lucbat_vocab_tables", tables)
+        setattr(tokenizer, "_lucbat_tables_v2", tables)
     except Exception:
         pass
     return tables
 
-def load_syllables(path, min_count=1): 
+
+def load_syllables(path, min_count=1): #Dựng danh sách tiếng hợp lệ từ kho ngữ liệu huấn luyện, phục vụ L16
     counter = {}
     with open(path, encoding="utf-8") as fh:
         for line in fh:
@@ -263,26 +345,23 @@ def load_syllables(path, min_count=1):
     return {w for w, c in counter.items()
             if c >= min_count and has_viet_structure(w)}
 
+
 class StrictLucBatProcessor(LogitsProcessor):
 
     def __init__(self, tokenizer, max_total_lines=2,
                  candidate_pool=(100, 400, 1600), end_bonus=25.0,
                  rhyme_bonus=3.0, whole_bonus=1.0, syllables=None,
-                 strict_lexicon=True):
+                 strict_lexicon=True, max_candidates=64):
         self.tokenizer = tokenizer
         self.max_total_lines = max_total_lines
         self.candidate_pool = candidate_pool
+        self.top_k = max(candidate_pool) if candidate_pool else 1600
+        self.max_candidates = max_candidates
         self.end_bonus = end_bonus
         self.rhyme_bonus = rhyme_bonus
         self.whole_bonus = whole_bonus
         self.syllables = syllables or None
         self.strict_lexicon = strict_lexicon
-        if self.syllables:
-            self.syllable_prefixes = build_prefix_set(self.syllables)
-            self.syllable_variants = build_variant_index(self.syllables)
-        else:
-            self.syllable_prefixes = None
-            self.syllable_variants = None
 
         self.eos_token_id = tokenizer.eos_token_id
         self.newline_ids = self._collect_newline_ids(tokenizer)
@@ -290,14 +369,33 @@ class StrictLucBatProcessor(LogitsProcessor):
             raise ValueError("Không xác định được token xuống dòng của bộ tách từ")
         self.nl_token_id = self.newline_ids[0]
 
-        self.allowed_ids, self.cont_prefixes, self.surfaces = \
-            _vocab_tables(tokenizer)
+        (allowed, self.cont_prefixes, self.surfaces, self.starts_word,
+         self.by_surface) = _vocab_tables(tokenizer)
+        # bề mặt của những token nối tiếp, dùng để biết một tiếng đang dở có
+        # thật sự viết tiếp được bằng token nào đó hay không
+        self.cont_surfaces = set(self.by_surface)
+        if self.syllables:
+            (self.prefix_index, self.base_index, self.syllable_variants,
+             self.reach) = get_indices(self.syllables, self.cont_surfaces,
+                                       id(tokenizer))
+        else:
+            self.prefix_index = None
+            self.base_index = None
+            self.syllable_variants = None
+            self.reach = None
         self.special_ids = set(getattr(tokenizer, "all_special_ids", []) or [])
         self.special_ids.discard(None)
-        self.allowed_ids = self.allowed_ids - self.special_ids
-        self.cont_ids = [tid for tid in self.allowed_ids
-                         if self.surfaces.get(tid, " ")[0] not in WORD_START_MARKS]
+        self.allowed_ids = [t for t in allowed if t not in self.special_ids]
+        # token nối tiếp, tức token không mở đầu một tiếng mới
+        self.cont_ids = [t for t in self.allowed_ids if t not in self.starts_word]
+        self._allowed_index = None
+        self._cont_index = None
+        self._lex_cache = {}
+        self._prefix_cache = {}
         self._token_cache = {}
+        self._prev_ids = None
+        self._prev_text = ""
+        self._incremental = self._probe_incremental()
 
     @staticmethod
     def _collect_newline_ids(tokenizer):
@@ -326,49 +424,107 @@ class StrictLucBatProcessor(LogitsProcessor):
         return ids
 
     def _tok_str(self, token_id):
+        s = self.surfaces.get(token_id)
+        if s is not None:
+            return s
         s = self._token_cache.get(token_id)
         if s is None:
             s = self.tokenizer.decode([token_id], skip_special_tokens=True)
             self._token_cache[token_id] = s
         return s
 
+    def _probe_incremental(self):
+        try:
+            enc = self.tokenizer.encode("hoa mùa xuân\nem còn đợi",
+                                        add_special_tokens=False)
+            joined = "".join(self._tok_str(t) for t in enc)
+            full = self.tokenizer.decode(enc, skip_special_tokens=True)
+            return joined == full
+        except Exception:
+            return False
+
+    def _decode(self, input_ids):
+        row = input_ids[0]
+        ids = row.tolist() if hasattr(row, "tolist") else list(row)
+        if self._incremental and self._prev_ids is not None:
+            k = len(self._prev_ids)
+            if len(ids) == k + 1 and ids[:k] == self._prev_ids:
+                text = self._prev_text + self._tok_str(ids[-1])
+                self._prev_ids, self._prev_text = ids, text
+                return text
+        text = self.tokenizer.decode(ids, skip_special_tokens=True)
+        self._prev_ids, self._prev_text = ids, text
+        return text
+
     def _in_lexicon(self, word):
         if word in self.syllables:
             return True
-        key = (remove_tones(word), get_tone_char(word))
-        return key in self.syllable_variants
+        return (remove_tones(word), get_tone_char(word)) in self.syllable_variants
 
     def _lex_tier(self, word):
+        # L16 và L17: trả về None nghĩa là loại thẳng
+        cached = self._lex_cache.get(word, _MISS)
+        if cached is not _MISS:
+            return cached
         w = normalize(word)
         if not is_valid_syllable(w):
-            return None
-        if self.syllables is not None:
+            result = None
+        elif self.syllables is not None:
             if self._in_lexicon(w):
-                return TIER_FULL
-            if self.strict_lexicon:
-                return None
-            return TIER_LEX if has_viet_structure(w) else None
-        # L17: Kiểm tra cấu trúc âm tiết nếu không có trong danh sách
-        return TIER_FULL if has_viet_structure(w) else None
+                result = TIER_FULL
+            elif self.strict_lexicon:
+                result = None
+            else:
+                result = TIER_LEX if has_viet_structure(w) else None
+        else:
+            # L17: kiểm tra cấu trúc âm tiết nếu không có danh sách
+            result = TIER_FULL if has_viet_structure(w) else None
+        self._lex_cache[word] = result
+        return result
 
     def _prefix_ok(self, word):
         # L17: tiếng đang dở còn khả năng trở thành một tiếng hợp lệ
+        cached = self._prefix_cache.get(word, _MISS)
+        if cached is not _MISS:
+            return cached
         w = normalize(word)
         if not is_valid_syllable(w):
-            return False
-        if self.syllable_prefixes:
-            if w in self.syllable_prefixes or remove_tones(w) in self.syllable_prefixes:
-                return True
-            if self.strict_lexicon:
-                return False
-        return is_structure_prefix(w)
+            ok = False
+        elif self._lex_tier(w) is not None:
+            # đã là một tiếng trọn vẹn thì đương nhiên hợp lệ
+            ok = True
+        elif self.prefix_index:
+            if w in self.prefix_index:
+                # còn tiếng nào bắt đầu bằng chuỗi này và còn viết tiếp được
+                ok = self._advanceable(w)
+            else:
+                # dạng bỏ dấu chỉ được chấp nhận khi còn tiếng dài hơn để
+                # viết tiếp, nhờ vậy không sinh ra tiếng thiếu dấu bế tắc
+                b = remove_tones(w)
+                longest = self.base_index.get(b)
+                ok = longest is not None and longest > len(b)
+            if not ok and not self.strict_lexicon:
+                ok = is_structure_prefix(w)
+        else:
+            ok = is_structure_prefix(w)
+        self._prefix_cache[word] = ok
+        return ok
+
+    def _advanceable(self, word):
+        """L17: tiếng đang dở phải viết tiếp được bằng một token có thật.
+
+        Nếu không có token nào mang phần còn thiếu thì tiếng đó sẽ mắc kẹt
+        giữa chừng và dòng thơ buộc phải kết thúc sớm. Chặn ngay từ đầu vẫn
+        hơn là chữa cháy về sau.
+        """
+        return word in self.reach
 
     def _extendable(self, word):
         # L02: tiếng đã hoàn chỉnh nhưng vẫn còn là tiền tố của tiếng dài hơn
-        w = normalize(word)
-        if not self.syllable_prefixes:
+        if not self.prefix_index:
             return False
-        return w in self.syllable_prefixes and not self._in_lexicon(w)
+        w = normalize(word)
+        return w in self.prefix_index and not self._in_lexicon(w)
 
     def _can_close(self, word):
         # L02: chỉ chốt dòng khi tiếng cuối là một tiếng tiếng Việt trọn vẹn
@@ -379,6 +535,9 @@ class StrictLucBatProcessor(LogitsProcessor):
             return True
         return not self._extendable(word)
 
+    # ------------------------------------------------------------------
+    # Luật niêm luật
+    # ------------------------------------------------------------------
     def _can_reach(self, word, target_rhyme):
         cur = get_rhyme_part(word)
         if cur == target_rhyme:
@@ -402,46 +561,57 @@ class StrictLucBatProcessor(LogitsProcessor):
         return ctx["luc_word"] if ctx["target_len"] == 8 else ctx["bat_word"]
 
     def _finalize_tier(self, pos, word, ctx):
+        # L16, L17: chính tả tiếng Việt, sai là loại thẳng
         tier = self._lex_tier(word)
         if tier is None:
             return None
 
+        # L06 đến L09
         if pos in TARGET_TONE and get_tone(word) != TARGET_TONE[pos]:
             tier = max(tier, TIER_TONE)
 
+        # L10 và L12
         target = self._target_rhyme(pos, ctx)
         if target and get_rhyme_part(word) != target:
             tier = max(tier, TIER_RHYME)
 
+        # L15
         same = self._target_word(pos, ctx)
         if same and word.lower() == same.lower():
             tier = max(tier, TIER_SOFT)
 
+        # L13
         if pos == 8 and ctx["word6"]:
             if get_tone_mark(word) == get_tone_mark(ctx["word6"]):
                 tier = max(tier, TIER_SOFT)
         return tier
 
     def _partial_tier(self, pos, word, ctx):
+        # L17: chuỗi đang dở phải còn khả năng thành một tiếng tiếng Việt
         if not self._prefix_ok(word):
             return None
 
         tone = get_tone(word)
+        # L11: tiếng chưa có nguyên âm thì bỏ qua kiểm tra thanh điệu
         if tone is None:
             return TIER_FULL
 
         tier = TIER_FULL
+        # L06 đến L09
         if pos in TARGET_TONE and tone != TARGET_TONE[pos]:
             tier = max(tier, TIER_TONE)
 
+        # L10 và L12
         target = self._target_rhyme(pos, ctx)
         if target and self._can_reach(word, target) is None:
             tier = max(tier, TIER_RHYME)
 
+        # L15
         same = self._target_word(pos, ctx)
         if same and word.lower() == same.lower():
             tier = max(tier, TIER_SOFT)
 
+        # L13
         if pos == 8 and ctx["word6"] and tone == "B":
             if get_tone_mark(word) == get_tone_mark(ctx["word6"]):
                 tier = max(tier, TIER_SOFT)
@@ -451,40 +621,66 @@ class StrictLucBatProcessor(LogitsProcessor):
         target = self._target_rhyme(pos, ctx)
         return bool(target) and get_rhyme_part(word) == target
 
-    def _rescue_complete(self, row, mask, words, scores): 
-        # Đ03 mở rộng: Quét toàn bộ từ vựng để viết nốt tiếng đang dở trước khi bỏ cuộc
+    # ------------------------------------------------------------------
+    # Điều hướng
+    # ------------------------------------------------------------------
+    def _rescue_complete(self, row, mask, words, scores): # Đ03 viết nốt tiếng đang dở trước khi bỏ cuộc
         if not words:
             return None
-        last = words[-1]
+        last = normalize(words[-1])
         if self._lex_tier(last) is not None:
             return None
-        best = None
-        for strict in (True, False):
+
+        cands = []
+        if self.prefix_index:
+            n = len(last)
+            for syl in self.prefix_index.get(last, ())[:64]:
+                if len(syl) <= n:
+                    continue
+                suffix = syl[n:]
+                # nhận cả token viết được trọn phần còn thiếu lẫn token chỉ
+                # viết được một phần, miễn là tiếng vẫn còn đường hoàn tất
+                for k in range(1, len(suffix) + 1):
+                    tid = self.by_surface.get(suffix[:k])
+                    if tid is None:
+                        continue
+                    step = last + suffix[:k]
+                    if step == syl or step in self.reach:
+                        cands.append(tid)
+
+        if cands:
+            idx = torch.as_tensor(sorted(set(cands)), device=row.device)
+            best = int(idx[int(torch.argmax(row[idx]))])
+        elif self.syllables is not None and self.strict_lexicon:
+            # có danh sách tiếng thì không bịa thêm tiếng ngoài danh sách
+            return None
+        else:
+            # quét rộng, chỉ dùng khi không tra được theo chỉ mục
+            if self._cont_index is None:
+                self._cont_index = torch.as_tensor(self.cont_ids,
+                                                   device=row.device)
+            values = row[self._cont_index].tolist()
             best, best_score = None, None
-            for tid in self.cont_ids:
+            for tid, score in zip(self.cont_ids, values):
                 s = self.surfaces.get(tid)
                 if not s or " " in s:
                     continue
                 cand = last + s
                 if len(cand) > MAX_SYLLABLE_LEN:
                     continue
-                if strict:
-                    if self._lex_tier(cand) is None:
-                        continue
-                elif not has_viet_structure(cand):
+                if not has_viet_structure(cand):
                     continue
-                score = row[tid].item()
                 if best_score is None or score > best_score:
                     best, best_score = tid, score
-            if best is not None:
-                break
-        if best is None:
-            return None
+            if best is None:
+                return None
+
         mask[best] = row[best] + self.end_bonus
         scores[0] = mask
         return scores
 
     def _close_line(self, row, mask, terminators, scores):
+        # Đ01, Đ02: chốt dòng bằng token xuống dòng hoặc token kết thúc
         if not terminators:
             terminators = self.newline_ids
         best = max(terminators, key=lambda t: row[t].item())
@@ -493,7 +689,7 @@ class StrictLucBatProcessor(LogitsProcessor):
         return scores
 
     def __call__(self, input_ids, scores):
-        text = self.tokenizer.decode(input_ids[0], skip_special_tokens=True)
+        text = self._decode(input_ids)
         lines = text.split("\n")
         current_line = lines[-1]
         previous = [l.strip() for l in lines[:-1] if l.strip()]
@@ -526,61 +722,73 @@ class StrictLucBatProcessor(LogitsProcessor):
                        ([self.eos_token_id] if is_last else self.newline_ids)
                        if t is not None]
 
-        # Áp dụng L02, Đ01, Đ02: chỉ kết thúc dòng khi tiếng cuối đã hoàn chỉnh
+        # L02, Đ01, Đ02: chỉ kết thúc dòng khi tiếng cuối đã hoàn chỉnh
         if n == target_len and words and has_vowel(words[-1]) \
                 and self._can_close(words[-1]):
             return self._close_line(row, mask, terminators, scores)
 
-        vocab = row.shape[-1]
+        line_open = bool(current_line) and not current_line[-1].isspace()
+        last_word = words[-1] if n else ""
+
+        if n >= 1:
+            prev_tier = self._finalize_tier(n, last_word, ctx)
+        else:
+            prev_tier = TIER_FULL
+        prev_lower = last_word.lower()
+
+        if self._allowed_index is None:
+            self._allowed_index = torch.as_tensor(self.allowed_ids,
+                                                  device=row.device)
+        pool = row[self._allowed_index]
+        k = min(self.top_k, pool.shape[-1])
+        values, positions = torch.topk(pool, k)
+        cand_ids = self._allowed_index[positions].tolist()
+
         buckets = {t: [] for t in TIER_ORDER}
-        seen = set()
+        full = buckets[TIER_FULL]
+        surfaces = self.surfaces
+        starts_word = self.starts_word
 
-        k_max = max(self.candidate_pool) if self.candidate_pool else 1600
-        _, indices = torch.topk(row, min(k_max, vocab))
-        
-        for token_id in indices.tolist():
-            if token_id in seen:
-                continue
-            seen.add(token_id)
+        for token_id in cand_ids:
+            s = surfaces[token_id]
 
-            # L17: Chỉ nhận token thuần chữ cái tiếng Việt và dấu cách
-            if token_id not in self.allowed_ids:
-                continue
-            s = self._tok_str(token_id)
-            if not is_viet_surface(s) or not s.strip():
-                continue
-
-            # L05: Loại token nếu số tiếng sau khi ghép vượt quá độ dài mục tiêu.
-            cand_words = (current_line + s).split()
-            m = len(cand_words)
-            if m == 0 or m > target_len:
-                continue
-
-            tier = TIER_FULL
-            if m > n and n >= 1:
-                t = self._finalize_tier(n, words[-1], ctx)
-                if t is None:
+            # L05: số tiếng sau khi ghép không vượt quá độ dài mục tiêu
+            if not line_open or token_id in starts_word:
+                m = n + 1
+                if m > target_len:
                     continue
-                tier = max(tier, t)
-                # L14: Tiếng mới không được trùng tiếng liền trước trong cùng dòng (Hạ tầng ưu tiên).
-                if m >= 2 and cand_words[-1].lower() == cand_words[-2].lower():
-                    tier = max(tier, TIER_SOFT)
+                word = s.strip()
+                tier = prev_tier
+                if tier is None:
+                    continue
+                # L14: tiếng mới không được trùng tiếng liền trước
+                if n >= 1 and word.lower() == prev_lower:
+                    tier = TIER_SOFT if tier < TIER_SOFT else tier
+            else:
+                m = n
+                word = last_word + s
+                if len(word) > MAX_SYLLABLE_LEN:
+                    continue
+                tier = TIER_FULL
 
-            # L17: Tiếng đang hình thành phải có khả năng trở thành tiếng hợp lệ
-            t = self._partial_tier(m, cand_words[-1], ctx)
+            # L17: tiếng đang hình thành phải có khả năng thành tiếng hợp lệ
+            t = self._partial_tier(m, word, ctx)
             if t is None:
                 continue
-            tier = max(tier, t)
+            if t > tier:
+                tier = t
 
             bonus = self.rhyme_bonus if self._is_exact_rhyme(
-                m, cand_words[-1], ctx) else 0.0
-                
-            # Đ01, Đ02 mở rộng: Cộng thưởng cho token khép lại một tiếng trọn vẹn
-            if self._lex_tier(cand_words[-1]) is not None:
+                m, word, ctx) else 0.0
+            # Đ01, Đ02 mở rộng: cộng thưởng cho token khép lại một tiếng trọn vẹn
+            if self._lex_tier(word) is not None:
                 bonus += self.whole_bonus
             buckets[tier].append((token_id, bonus))
 
-        # Đ03 mở rộng: Nới lỏng theo tầng ưu tiên, đầy đủ trước rồi mới nới lỏng dần (không nới luật chính tả)
+            if len(full) >= self.max_candidates:
+                break
+
+        # Đ03 mở rộng: nới lỏng theo tầng ưu tiên, không nới luật chính tả
         chosen = []
         for t in TIER_ORDER:
             if buckets[t]:
@@ -588,18 +796,19 @@ class StrictLucBatProcessor(LogitsProcessor):
                 break
 
         if not chosen:
-            # Đ03 mở rộng: Quét toàn bộ từ vựng để viết nốt tiếng đang dở
             out = self._rescue_complete(row, mask, words, scores)
             if out is not None:
                 return out
             return self._close_line(row, mask, terminators, scores)
 
-        for token_id, bonus in chosen:
-            mask[token_id] = row[token_id] + bonus
-
-        # Đ03: Khôi phục điểm số cho token xuống dòng hoặc kết thúc tùy trạng thái nếu toàn bộ véc-tơ điểm số đều mang giá trị âm vô cùng.
-        if not bool(torch.isfinite(mask).any()):
+        idx = torch.as_tensor([c[0] for c in chosen], device=row.device)
+        bonuses = torch.as_tensor([c[1] for c in chosen], device=row.device,
+                                  dtype=row.dtype)
+        picked = row[idx] + bonuses
+        if not bool(torch.isfinite(picked).any()):
+            # Đ03: khôi phục điểm cho token xuống dòng hoặc kết thúc
             return self._close_line(row, mask, terminators, scores)
+        mask[idx] = picked
 
         scores[0] = mask
         return scores
